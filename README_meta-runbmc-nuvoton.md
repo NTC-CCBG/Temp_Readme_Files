@@ -40,6 +40,11 @@ Please submit any patches against the meta-runbmc-nuvoton layer to the maintaine
     + [Virtual Media](#virtual-media)
     + [BMC Firmware Update](#bmc-firmware-update)
     + [BIOS update](#bios-update)
+  * [System](#system)
+    + [Time](#time)
+    + [Sensor](#sensor)
+    + [LED](#led)
+    + [ADC](#adc)
   * [LDAP for User Management](#ldap-for-user-management)
     + [LDAP Server Setup](#ldap-server-setup)
   * [JTAG Master](#jtag-master)
@@ -278,6 +283,342 @@ This is a secure flash update mechanism to update BMC firmware via WebUI.
 **Maintainer**
 
 * Brian Ma
+
+## System
+
+### Time
+  * **SNTP**
+    	Network Time Protocol (NTP) is a networking protocol for clock synchronization between computer systems over packet-switched, variable-latency data networks.
+
+    **systemd-timesyncd** is a daemon that has been added for synchronizing the system clock across the network. It implements an **SNTP (Simple NTP)** client. This daemon runs with minimal privileges, and has been hooked up with **systemd-networkd** to only operate when network connectivity is available.
+        
+    The modification time of the file **/var/lib/systemd/timesync/clock** indicates the timestamp of the last successful synchronization (or at least the **systemd build date**, in case synchronization was not possible).
+    
+    **Source URL**
+    * [https://github.com/systemd/systemd/tree/master/src/timesync](https://github.com/systemd/systemd/tree/master/src/timesync)
+    
+    **How to use**
+    <img align="right" width="30%" src="https://cdn.rawgit.com/NTC-CCBG/snapshots/f38b505/openbmc/ntp.png">
+    * Enable NTP by **Web-UI** `Server configuration`
+      ->`Date and time settings`
+    * Enable NTP by command
+      ```
+      timedatectl set-ntp true  
+      ```
+      >_timedatectl result will show **systemd-timesyncd.service active: yes**_ 
+    
+      If NTP is Enabled and network is Connected (Using **eth2** connect to router), we will see the item **systemd-timesyncd.service active** is **yes** and **System clock synchronized** is **yes**. Thus, system time will sync from NTP server to get current time.
+    * Get NTP status  
+      ```
+      timedatectl  
+      ```
+      >_Local time: Mon 2018-08-27 09:24:51 UTC  
+      >Universal time: Mon 2018-08-27 09:24:51 UTC  
+      >RTC time: n/a  
+      >Time zone: n/a (UTC, +0000)  
+      >**System clock synchronized: yes**  
+      >**systemd-timesyncd.service active: yes**  
+      >RTC in local TZ: no_  
+      
+    * Disable NTP  
+      ```
+      timedatectl set-ntp false  
+      ```
+      >_timedatectl result will show **systemd-timesyncd.service active: no**_  
+      
+    * Using Local NTP server Configuration  
+    When starting, systemd-timesyncd will read the configuration file from **/etc/systemd/timesyncd.conf**, which looks like as below: 
+        >_[Time]  
+        >\#NTP=  
+        >\#FallbackNTP=time1.google.com time2.google.com time3.google.com time4.google.com_  
+    
+    	By default, systemd-timesyncd uses the Google Public NTP servers **time[1-4].google.com**, if no other NTP configuration is available. To add time servers or change the provided ones, **uncomment** the relevant line and list their host name or IP separated by a space. For example, we setup NB windows 10 system as NTP server with IP **192.168.1.128**  
+        >_[Time]  
+        >**NTP=192.168.1.128**  
+    	>\#FallbackNTP=time1.google.com time2.google.com time3.google.com time4.google.com_
+    
+    * BMC connect to local NTP server of windows 10 system  
+      Connect to NB through **eth0** EMAC interface, and set static IP **192.168.1.15**  
+    
+      ```
+      ifconfig eth0 up
+      ifconfig eth0 192.168.1.15
+      ```  
+      >_Note: Before that you need to setup your NTP server (192.168.1.128) on Windows 10 system first_  
+      
+      Modify **/etc/systemd/timesyncd.conf** file on BMC as we mentioned
+        >_[Time]  
+        >**NTP=192.168.1.128**_  
+      
+      Re-start NTP to make effect about our configuration change  
+      ```
+      systemctl restart systemd-timesyncd.service
+      ```  
+      Check status of NTP that show already synced to our local time server 
+      ```
+      systemctl status systemd-timesyncd.service -l --no-pager
+      ```  
+      >_Status: "Synchronized to time server 192.168.1.128:123 (192.168.1.128)."_  
+      
+      Verify **Web-UI** `Server overview`->`BMC time` whether sync from NTP server as same as **timedatectl**. (Note: timedatectl time zone default is UTC, thus you will find the BMC time is UTC+8)
+      ```
+      timedatectl  
+      ```
+      >_Local time: Thu 2018-09-06 07:24:16 UTC  
+      >Universal time: Thu 2018-09-06 07:24:16 UTC  
+      >RTC time: n/a  
+      >Time zone: n/a (UTC, +0000)  
+      >System clock synchronized: yes  
+      >systemd-timesyncd.service active: yes  
+      >RTC in local TZ: no_  
+
+  * **Time settings**  
+    **Phosphor-time-manager** provides two objects on D-Bus
+      >_/xyz/openbmc_project/time/bmc_
+      >
+      >_/xyz/openbmc_project/time/host_  
+
+      **BMC time** is used by journal event log record, and **Host time** is used by Host do IPMI Set SEL Time command to sync BMC time from Host mechanism in an era of BMC without any network interface.  
+      Currently, we cannot set Host time no matter what we use **busctl**, **REST API** or **ipmitool set time set** command. Due to **phosphor-settingd** this daemon set default TimeOwner is BMC and TimeSyncMethod is NTP. Thus, when TimeOwner is BMC that is not allow to set Host time anyway.
+
+      A summary of which cases the time can be set on BMC or HOST
+
+      Mode      | Owner | Set BMC Time  | Set Host Time
+      --------- | ----- | ------------- | -------------------
+      NTP       | BMC   | Fail to set   | Not allowed (Default setting)
+      NTP       | HOST  | Not allowed   | Not allowed
+      NTP       | SPLIT | Fail to set   | OK
+      NTP       | BOTH  | Fail to set   | Not allowed
+      MANUAL    | BMC   | OK            | Not allowed
+      MANUAL    | HOST  | Not allowed   | OK
+      MANUAL    | SPLIT | OK            | OK
+      MANUAL    | BOTH  | OK            | OK
+
+      If user would like to set Host time that need to set Owner to SPLIT in NTP mode or set Owner to HOST/SPLIT/BOTH in MANUAL mode. However, change Host time will not effect BMC time and journal event log timestamp.
+
+    **Set Time Owner to Split**
+    ```
+    ### With busctl on BMC
+    busctl set-property xyz.openbmc_project.Settings \
+       /xyz/openbmc_project/time/owner xyz.openbmc_project.Time.Owner \
+       TimeOwner s xyz.openbmc_project.Time.Owner.Owners.Split
+    
+    ### With REST API on remote host
+    curl -c cjar -b cjar -k -H "Content-Type: application/json" -X  PUT  -d \
+       '{"data": "xyz.openbmc_project.Time.Owner.Owners.Split" }' \
+       https://${BMC_IP}/xyz/openbmc_project/time/owner/attr/TimeOwner
+    ```
+    **TimeZone**  
+    According OpenBMC current design that only support UTC TimeZone now, we can use below command to get current support TimeZone on BMC
+    ```
+    timedatectl list-timezones
+    ```
+    **Maintainer**  
+* Tim Lee
+
+### Sensor
+<img align="right" width="30%" src="https://raw.githubusercontent.com/NTC-CCBG/snapshots/e1d1733/openbmc/sensor.png">  
+
+[phosphor-hwmon](https://github.com/openbmc/phosphor-hwmon) daemon will periodically check the sensor reading to see if it exceeds lower bound or upper bound . If alarm condition is hit and event generating option is on, it calls [phosphor-logging](https://github.com/openbmc/phosphor-logging) API to generate a **Log entry**.  
+Later on, ipmi tool on host side can send IPMI command to BMC to get SEL events, [phosphor-host-ipmid](https://github.com/openbmc/phosphor-host-ipmid) will convert the **Log entries** to SEL record format and reply to host.  
+
+**Source URL**
+* [https://github.com/Nuvoton-Israel/openbmc/tree/runbmc/meta-quanta/meta-olympus-nuvoton/recipes-phosphor/dbus](https://github.com/Nuvoton-Israel/openbmc/tree/runbmc/meta-quanta/meta-olympus-nuvoton/recipes-phosphor/dbus)
+* [https://github.com/Nuvoton-Israel/openbmc/tree/runbmc/meta-quanta/meta-olympus-nuvoton/recipes-phosphor/ipmi](https://github.com/Nuvoton-Israel/openbmc/tree/runbmc/meta-quanta/meta-olympus-nuvoton/recipes-phosphor/ipmi)
+* [https://github.com/Nuvoton-Israel/openbmc/tree/runbmc/meta-quanta/meta-olympus-nuvoton/recipes-phosphor/sensors](https://github.com/Nuvoton-Israel/openbmc/tree/runbmc/meta-quanta/meta-olympus-nuvoton/recipes-phosphor/sensors)
+
+
+**How to use**
+
+* **Configure sensor and event generator**
+
+  * Add Inventory of Sensors
+
+     **Inventory of Sensors** is a map table that defines all types of SEL event BMC can generate. It is constructed from a yaml file, [recipes-phosphor/ipmi/phosphor-ipmi-inventory-sel/config.yaml](https://github.com/openbmc/meta-phosphor/blob/master/recipes-phosphor/ipmi/phosphor-ipmi-inventory-sel/config.yaml)  
+
+     Below is a sample **[config.yaml](https://github.com/Nuvoton-Israel/openbmc/blob/runbmc/meta-quanta/meta-olympus-nuvoton/recipes-phosphor/configuration/olympus-nuvoton-yaml-config/olympus-nuvoton-ipmi-inventory-sensors.yaml)** for Olympus Nuvoton BMC:
+       ```
+       /xyz/openbmc_project/inventory/system:
+         sensorID: 0
+         sensorType: 0x12
+         eventReadingType: 0x6F
+         offset: 0x02
+       /xyz/openbmc_project/sensors/temperature/bmc_card/critical_high:
+         sensorID: 1
+         sensorType: 0x01
+         eventReadingType: 0x01
+         offset: 0x09
+       /xyz/openbmc_project/sensors/temperature/bmc_card/critical_low:
+         sensorID: 1
+         sensorType: 0x01
+         eventReadingType: 0x01
+         offset: 0x02
+       /xyz/openbmc_project/sensors/temperature/inlet/critical_high:
+         sensorID: 2
+         sensorType: 0x01
+         eventReadingType: 0x01
+         offset: 0x09
+       /xyz/openbmc_project/sensors/temperature/inlet/critical_low:
+         sensorID: 2
+         sensorType: 0x01
+         eventReadingType: 0x01
+         offset: 0x02   
+       ```
+       > _Please refer to  **Sensor and Event Code Tables** in IPMI 2.0 spec for definition of sensorID, sensorType,  eventReadingType, and offset_  
+     
+     It defines 4 events which could be generated by 2 temperature sensors on BMC : 
+
+      | Name     | SensorID | SensorType  | EventType | Event Description           |
+      |----------|---------:|-------------|-----------|-----------------------------|
+      | bmc_card |        1 | Temperature | Threshold | Upper Critical - going high |
+      | bmc_card |        1 | Temperature | Threshold | Lower Critical - going low  |
+      | inlet    |        2 | Temperature | Threshold | Upper Critical - going high |
+      | inlet    |        2 | Temperature | Threshold | Lower Critical - going low  |
+    
+  * Add Sensor Configuration File
+  
+    Each sensor has a [config file](https://github.com/Nuvoton-Israel/openbmc/tree/runbmc/meta-quanta/meta-olympus-nuvoton/recipes-phosphor/sensors/phosphor-hwmon/obmc/hwmon/ahb/apb) that defines the sensor name and its warning or critical thresholds. These files are located under **recipes-phosphor/sensors/phosphor-hwmon%/obmc/hwmon/apb/**.  
+
+    Below is config for a LM75 sensor on BMC. The sensor type is **temperature** and its name is **bmc_card**. It has warning and critical thresholds for **upper** and **lower** bound.
+      ```
+      LABEL_temp1 = "bmc_card"
+      WARNHI_temp1 = "110000"
+      WARNLO_temp1 = "5000"
+      CRITHI_temp1 = "115000"
+      CRITLO_temp1 = "0"
+      ```
+
+  * Modify D-Bus Sensor Error Metadata interface  
+  
+    Modify the file [Threshold.metadata.yaml](https://github.com/openbmc/phosphor-dbus-interfaces/blob/master/xyz/openbmc_project/Sensor/Threshold.metadata.yaml) to determine how to format the meta data of event records, like below : 
+
+      ```
+      - name: CriticalHigh
+        level: ERR
+        meta:
+          - str: "SENSOR_DATA=%s"
+            type: string
+          - str: "CALLOUT_INVENTORY_PATH=%s"
+            type: string
+      - name: CriticalLow
+        level: ERR
+        meta:
+          - str: "SENSOR_DATA=%s"
+            type: string
+          - str: "CALLOUT_INVENTORY_PATH=%s"
+            type: string
+      ```
+    **xyz.openbmc_project.Common.Callout.Inventory** is added here in order to include **CALLOUT_INVENTORY_PATH** into phosphor-logging Log entry.
+
+* **Dump events**
+
+  * Using WebUI  
+  
+    In `Event log` page of **WebUI**, the event may contain a related item like below.
+    * **CALLOUT_INVENTORY_PATH** means it has association info in **Inventory of Sensors** table and **/xyz/openbmc_project/sensors/temperature/bmc_card/critical_high** is the key to this map table.  
+    * **SENSOR_DATA** is the sensor reading while the event is recorded.  
+
+      ```
+       CALLOUT_INVENTORY_PATH=/xyz/openbmc_project/sensors/temperature/bmc_card/critical_high SENSOR_DATA=31000 _PID=2531
+      ```
+
+  * Using IPMI
+    
+    Use IPMI utilities like **ipmitool** to send command for getting SEL records.  
+    ```
+    $ sudo ipmitool sel list
+    
+       1 | 10/04/2018 | 07:08:54 | Temperature #0x03 | Lower Critical going low  | Asserted
+       2 | 10/04/2018 | 07:10:39 | Temperature #0x03 | Lower Critical going low  | Asserted
+       3 | 10/04/2018 | 07:28:04 | Temperature #0x03 | Upper Critical going high | Asserted
+       4 | 10/04/2018 | 07:28:11 | Temperature #0x03 | Upper Critical going high | Asserted
+       5 | 10/04/2018 | 07:28:13 | Temperature #0x03 | Upper Critical going high | Asserted
+       6 | 10/04/2018 | 07:46:34 | Temperature #0x03 | Upper Critical going high | Asserted
+       7 | 10/04/2018 | 07:46:38 | Temperature #0x03 | Upper Critical going high | Asserted
+       8 | 10/04/2018 | 07:46:43 | Temperature #0x03 | Upper Critical going high | Asserted
+       9 | 10/04/2018 | 07:46:59 | Temperature #0x03 | Upper Critical going high | Asserted
+       a | 10/04/2018 | 07:47:24 | Temperature #0x03 | Upper Critical going high | Asserted
+       b | 10/04/2018 | 07:47:29 | Temperature #0x03 | Upper Critical going high | Asserted
+       c | 10/04/2018 | 07:47:42 | Temperature #0x03 | Upper Critical going high | Asserted
+       d | 10/04/2018 | 07:48:37 | Temperature #0x03 | Upper Critical going high | Asserted
+       e | 10/04/2018 | 07:48:39 | Temperature #0x03 | Upper Critical going high | Asserted
+       f | 10/04/2018 | 07:48:53 | Temperature #0x03 | Upper Critical going high | Asserted
+      10 | 10/04/2018 | 09:19:11 | Temperature #0x03 | Lower Critical going low  | Asserted
+      11 | 10/04/2018 | 09:20:22 | Temperature #0x03 | Lower Critical going low  | Asserted
+      12 | 10/04/2018 | 09:20:24 | Temperature #0x03 | Lower Critical going low  | Asserted
+      13 | 10/04/2018 | 09:33:24 | Temperature #0x03 | Upper Critical going high | Asserted
+      14 | 10/04/2018 | 09:33:31 | Temperature #0x03 | Upper Critical going high | Asserted
+    ```
+
+**Maintainer**
+
+* Stanley Chu
+
+### LED
+<img align="right" width="30%" src="https://raw.githubusercontent.com/NTC-CCBG/snapshots/db6eec1/openbmc/led.png">  
+
+Turning on ServerLED via WebUI will make **identify** leds on BMC start blinking,
+ and **heartbeat** will start blinklin after BMC booted.
+
+**Source URL**
+* [https://github.com/Nuvoton-Israel/openbmc/tree/runbmc/meta-quanta/meta-olympus-nuvoton/recipes-phosphor/leds](https://github.com/Nuvoton-Israel/openbmc/tree/runbmc/meta-quanta/meta-olympus-nuvoton/recipes-phosphor/leds)
+
+**How to use**
+* Add enclosure_identify in LED [config file](https://github.com/Nuvoton-Israel/openbmc/blob/runbmc/meta-quanta/meta-olympus-nuvoton/recipes-phosphor/leds/olympus-nuvoton-led-manager-config/led.yaml)
+  ```
+  BmcBooted:
+    heartbeat:
+        Action: 'Blink'
+        DutyOn: 50
+        Period: 1000
+  EnclosureIdentify:
+    identify:
+        Action: 'Blink'
+        DutyOn: 50
+        Period: 1000
+  ```
+
+* Modify BSP layer [config](https://github.com/Nuvoton-Israel/openbmc/blob/runbmc/meta-quanta/meta-olympus-nuvoton/conf/machine/olympus-nuvoton.conf) to select npcm750 LED config file
+  ```
+  PREFERRED_PROVIDER_virtual/phosphor-led-manager-config-native = "npcm750-led-manager-config-native"
+  ```
+
+**Maintainer**
+
+* Stanley Chu
+
+### ADC
+<img align="right" width="30%" src="https://raw.githubusercontent.com/NTC-CCBG/snapshots/7710feb/openbmc/adc.png">
+The NPCM750 contains an Analog-to-Digital Converter (ADC) interface that supports eight-channel inputs.
+The ADC output value can be showed in Sensors page.
+
+**Source URL**
+* [https://github.com/Nuvoton-Israel/openbmc/blob/master/meta-evb/meta-evb-nuvoton/meta-evb-npcm750/recipes-phosphor/sensors/phosphor-hwmon/obmc/hwmon/ahb/apb/adc%40c000.conf](https://github.com/Nuvoton-Israel/openbmc/blob/master/meta-evb/meta-evb-nuvoton/meta-evb-npcm750/recipes-phosphor/sensors/phosphor-hwmon/obmc/hwmon/ahb/apb/adc%40c000.conf)
+
+**How to use**
+ * Add ADC configuration file(adc@c000.conf)
+   ```
+   LABEL_in1 = "adc1"
+   LABEL_in2 = "adc2"
+   LABEL_in3 = "adc3"
+   LABEL_in4 = "adc4"
+   LABEL_in5 = "adc5"
+   LABEL_in6 = "adc6"
+   LABEL_in7 = "adc7"
+   LABEL_in8 = "adc8"
+   ```
+   NOTE: For the LABEL assignment like LABEL_$(key) = $(value), the $(key) must have corresponding hwmon sysfs file in /sys/class/hwmon/hwmonN/$(key)_input
+
+ * Add configuration file to rootfs, modify phosphor-hwmon_%.bbappend
+   ```
+   ENVS = "obmc/hwmon/ahb/apb/{0}"
+   ITEMS = "adc@c000.conf"
+   SYSTEMD_ENVIRONMENT_FILE_${PN} += "${@compose_list(d, 'ENVS', 'ITEMS')}"
+   ```
+
+**Maintainer**
+
+* Stanley Chu
 
 # LDAP for User Management
 <img align="right" width="30%" src="https://cdn.rawgit.com/NTC-CCBG/snapshots/b6fdec0d/openbmc/ldap-login-via-ssh.png">
@@ -1023,3 +1364,5 @@ image-rwfs    |  0 MB  | middle layer of the overlayfs, rw files in this partiti
 * 2019.11.20 First release VM, In-Band Firmware Update
 * 2019.12.05 Add BIOS update function via web UI part
 * 2019.12.09 Update Serail Over Lan(SOL) and BMC Firmware update
+* 2019.12.11 Update Time settings of System/Time
+* 2019.12.13 Update Sensor, LED, ADC
